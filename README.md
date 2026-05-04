@@ -1,5 +1,7 @@
 # astrbot_plugin_cloud189_auto_save
 
+有问题? 询问[deepwiki](https://deepwiki.com/wobuhui666/astrbot_plugin_cloud189_auto_save)
+
 把 [cloud189-auto-save](https://github.com/1373535745/cloud189-auto-save) 自带的 Telegram 机器人完整复刻为 **AstrBot 全平台插件**。  
 通过 HTTP API 调用现有后端,所以无需修改后端代码,即可在 **QQ / Telegram / 微信 / Discord / Lark / 钉钉** 等所有 AstrBot 适配的平台上得到与 TG 机器人一致的体验。
 
