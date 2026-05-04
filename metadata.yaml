@@ -1,0 +1,5 @@
+name: astrbot_plugin_cloud189_auto_save
+desc: 天翼云盘自动转存系统 - 全平台机器人(完整复刻 cloud189-auto-save 项目自带 TG bot 的 33 条命令,改用 HTTP API 调用后端,支持 QQ/微信/Telegram/Discord 等所有 AstrBot 平台)
+version: 1.0.0
+author: cloud189-auto-save
+repo: ""

@@ -1,0 +1,65 @@
+{
+  "api_base_url": {
+    "type": "string",
+    "description": "cloud189-auto-save 后端地址",
+    "hint": "例如 http://localhost:3000 或 http://192.168.1.10:3000",
+    "default": "http://localhost:3000"
+  },
+  "api_key": {
+    "type": "string",
+    "description": "后端 system.apiKey,作为 x-api-key 请求头使用",
+    "hint": "在后端网页端 设置 → 系统 → API Key 处生成,然后填到这里",
+    "obvious_hint": true,
+    "default": ""
+  },
+  "request_timeout_seconds": {
+    "type": "int",
+    "description": "HTTP 请求超时(秒)",
+    "default": 30
+  },
+  "default_account_id": {
+    "type": "int",
+    "description": "默认天翼云盘账号 ID,留 0 则自动用第一个;可被 /accounts 切换覆盖",
+    "default": 0
+  },
+  "allowed_user_ids": {
+    "type": "list",
+    "description": "允许使用此插件的 AstrBot sender_id 列表(取自 event.get_sender_id());留空表示所有人",
+    "default": []
+  },
+  "admin_user_ids": {
+    "type": "list",
+    "description": "管理员 sender_id 列表;管理员才能 /execute_all、/dt_<id>、/retry_<id>、/df_<id>、/pt_toggle_<id>、/pt_refresh_<id>、/pt_retry_<id>、/pt_del_<id>",
+    "default": []
+  },
+  "silent_mode": {
+    "type": "bool",
+    "description": "静默模式:收到 cloud.189.cn 分享链接时直接用默认常用目录创建任务,不再每次询问",
+    "default": false
+  },
+  "log_file_path": {
+    "type": "string",
+    "description": "/logs 命令读取的日志文件路径(仅当插件与后端同机部署时可用,留空则禁用 /logs)",
+    "default": ""
+  },
+  "log_max_lines": {
+    "type": "int",
+    "description": "/logs 命令返回的最大行数",
+    "default": 30
+  },
+  "session_idle_seconds": {
+    "type": "int",
+    "description": "用户会话空闲清理阈值(秒)",
+    "default": 1800
+  },
+  "search_timeout_seconds": {
+    "type": "int",
+    "description": "/search_cs 与 /pt_search 多轮等待超时(秒)",
+    "default": 180
+  },
+  "page_size": {
+    "type": "int",
+    "description": "/tasks /subs /pt_subs 等分页每页条数",
+    "default": 5
+  }
+}
