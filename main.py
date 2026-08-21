@@ -1,7 +1,7 @@
 """AstrBot 插件入口:把所有命令注册到 Star 子类上,委托到 handlers/。
 
-完整复刻 cloud189-auto-save/src/services/telegramBot/ 的 33 条命令,
-通过 HTTP API 调用后端,支持所有 AstrBot 平台。
+同步 cloud189-auto-save 的机器人、影巢、Agent 追剧、PT 与审计能力,
+并通过 AstrBot LLM Tool 支持自然语言调用。
 """
 from __future__ import annotations
 
@@ -15,7 +15,8 @@ from .api.client import Cloud189ApiClient
 from .api.errors import friendly_error
 from .core.auth import is_admin, is_allowed
 from .core.session import SessionStore
-from .handlers import basics, folders, pt, search, share
+from .handlers import basics, folders, hdhive, history, pt, search, share
+from .handlers import llm_tools as natural_tools
 from .handlers import stats_logs_subs as sls
 from .handlers import tasks as tasks_handler
 
@@ -23,8 +24,8 @@ from .handlers import tasks as tasks_handler
 @register(
     "astrbot_plugin_cloud189_auto_save",
     "cloud189-auto-save",
-    "天翼云盘自动转存系统 - 全平台机器人(完整复刻 TG bot 的 33 条命令)",
-    "1.0.0",
+    "天翼云盘自动转存系统 - 全平台机器人与 LLM 自然语言工具",
+    "1.1.0",
     "",
 )
 class Cloud189Plugin(Star):
@@ -243,6 +244,62 @@ class Cloud189Plugin(Star):
         async for r in search.handle_series(self, event, query, "lazy"):
             yield r
 
+    @filter.command("series_intents")
+    async def cmd_series_intents(self, event: AstrMessageEvent):
+        """自动追剧 Intent 列表"""
+        self._kick_sweeper()
+        async for r in search.handle_series_intents(self, event):
+            yield r
+
+    @filter.command("series_pause")
+    async def cmd_series_pause(self, event: AstrMessageEvent, intent_id: str = ""):
+        """暂停自动追剧 Intent(管理员)"""
+        self._kick_sweeper()
+        async for r in search.handle_series_action(self, event, intent_id, "pause"):
+            yield r
+
+    @filter.command("series_resume")
+    async def cmd_series_resume(self, event: AstrMessageEvent, intent_id: str = ""):
+        """恢复自动追剧 Intent(管理员)"""
+        self._kick_sweeper()
+        async for r in search.handle_series_action(self, event, intent_id, "resume"):
+            yield r
+
+    @filter.command("series_run")
+    async def cmd_series_run(self, event: AstrMessageEvent, intent_id: str = ""):
+        """立即运行自动追剧 Intent(管理员)"""
+        self._kick_sweeper()
+        async for r in search.handle_series_action(self, event, intent_id, "run"):
+            yield r
+
+    # ─────────────────── HDHive ───────────────────
+    @filter.command("hdhive")
+    async def cmd_hdhive(self, event: AstrMessageEvent, *args):
+        """影巢搜索 /hdhive 关键词"""
+        self._kick_sweeper()
+        keyword = " ".join(str(arg) for arg in args).strip()
+        async for r in hdhive.handle_hdhive(self, event, keyword):
+            yield r
+
+    @filter.command("hdhive_resources")
+    async def cmd_hdhive_resources(
+        self,
+        event: AstrMessageEvent,
+        media_type: str = "",
+        tmdb_id: str = "",
+    ):
+        """按 TMDB ID 查询影巢天翼资源"""
+        self._kick_sweeper()
+        async for r in hdhive.handle_hdhive_resources(self, event, media_type, tmdb_id):
+            yield r
+
+    @filter.command("hdhive_checkin")
+    async def cmd_hdhive_checkin(self, event: AstrMessageEvent):
+        """执行影巢签到"""
+        self._kick_sweeper()
+        async for r in hdhive.handle_hdhive_checkin(self, event):
+            yield r
+
     # ─────────────────── stats / logs / subs ───────────────────
     @filter.command("stats")
     async def cmd_stats(self, event: AstrMessageEvent):
@@ -279,12 +336,35 @@ class Cloud189Plugin(Star):
         async for r in sls.handle_subs_refresh(self, event, _last_token(event)):
             yield r
 
+    # ─────────────────── history ───────────────────
+    @filter.command("history")
+    async def cmd_history(self, event: AstrMessageEvent, *args):
+        """统一审计历史 /history [关键词] [页码]"""
+        self._kick_sweeper()
+        keyword, page = _history_args(args)
+        async for r in history.handle_history(self, event, keyword, page):
+            yield r
+
+    @filter.command("history_detail")
+    async def cmd_history_detail(self, event: AstrMessageEvent, run_id: str = ""):
+        """审计详情 /history_detail RUN_ID"""
+        self._kick_sweeper()
+        async for r in history.handle_history_detail(self, event, run_id):
+            yield r
+
     # ─────────────────── PT ───────────────────
     @filter.command("pt_search")
     async def cmd_pt_search(self, event: AstrMessageEvent):
         """进入 PT 搜索模式"""
         self._kick_sweeper()
         async for r in pt.handle_pt_search(self, event):
+            yield r
+
+    @filter.command("pt_status")
+    async def cmd_pt_status(self, event: AstrMessageEvent):
+        """PT 全局任务与总下载/天翼上传速度"""
+        self._kick_sweeper()
+        async for r in pt.handle_pt_status(self, event):
             yield r
 
     @filter.command("pt_subs")
@@ -352,7 +432,134 @@ class Cloud189Plugin(Star):
         async for r in share.handle_share_link(self, event):
             yield r
 
+    # ─────────────────── AstrBot LLM Tools ───────────────────
+    @filter.llm_tool(name="cloud189_query_tasks")
+    async def llm_query_tasks(
+        self,
+        event: AstrMessageEvent,
+        status: str = "",
+        keyword: str = "",
+        task_id: int = 0,
+        limit: int = 10,
+    ) -> str:
+        """查询天翼转存任务列表或某个任务详情。仅用于查询，不会执行或修改任务。
+
+        Args:
+            status(string): 状态筛选，支持 pending、processing、completed、failed；不筛选时传空字符串
+            keyword(string): 任务名称或账号关键词；不筛选时传空字符串
+            task_id(number): 查询单个任务时传任务 ID，否则传 0
+            limit(number): 最多返回的任务数量，建议 1 到 30
+        """
+        return await natural_tools.query_tasks(self, event, status, keyword, task_id, limit)
+
+    @filter.llm_tool(name="cloud189_system_status")
+    async def llm_system_status(self, event: AstrMessageEvent) -> str:
+        """查询 cloud189-auto-save 系统概况、任务统计、PT 全局任务和总传输速度。"""
+        return await natural_tools.system_status(self, event)
+
+    @filter.llm_tool(name="cloud189_search_media")
+    async def llm_search_media(
+        self,
+        event: AstrMessageEvent,
+        keyword: str,
+        source: str = "all",
+    ) -> str:
+        """从 CloudSaver、影巢或 TMDB 搜索影视资源，只查询，不自动解锁或转存。
+
+        Args:
+            keyword(string): 影视名称或搜索关键词
+            source(string): 搜索来源，支持 all、cloudsaver、hdhive、tmdb
+        """
+        return await natural_tools.search_media(self, event, keyword, source)
+
+    @filter.llm_tool(name="cloud189_list_auto_series")
+    async def llm_list_auto_series(
+        self,
+        event: AstrMessageEvent,
+        limit: int = 10,
+    ) -> str:
+        """查询自动追剧 Intent、Agent 模式和当前状态。
+
+        Args:
+            limit(number): 最多返回的 Intent 数量，建议 1 到 30
+        """
+        return await natural_tools.list_auto_series(self, event, limit)
+
+    @filter.llm_tool(name="cloud189_create_auto_series")
+    async def llm_create_auto_series(
+        self,
+        event: AstrMessageEvent,
+        title: str,
+        year: str = "",
+        mode: str = "",
+    ) -> str:
+        """创建持久化自动追剧 Intent。此写操作仅管理员可用，并沿用后端的 Agent、来源顺序和画质偏好设置。
+
+        Args:
+            title(string): 要追剧的准确剧名
+            year(string): 可选年份，不指定时传空字符串
+            mode(string): normal 自动转存、lazy 懒转存，沿用后端默认设置时传空字符串
+        """
+        return await natural_tools.create_auto_series(self, event, title, year, mode)
+
+    @filter.llm_tool(name="cloud189_control_auto_series")
+    async def llm_control_auto_series(
+        self,
+        event: AstrMessageEvent,
+        intent_id: str,
+        action: str,
+    ) -> str:
+        """暂停、恢复或立即运行自动追剧 Intent。此写操作仅管理员可用。
+
+        Args:
+            intent_id(string): 自动追剧 Intent ID
+            action(string): 操作，支持 pause、resume、run
+        """
+        return await natural_tools.control_auto_series(self, event, intent_id, action)
+
+    @filter.llm_tool(name="cloud189_query_history")
+    async def llm_query_history(
+        self,
+        event: AstrMessageEvent,
+        keyword: str = "",
+        module: str = "",
+        status: str = "",
+        run_id: str = "",
+        limit: int = 10,
+    ) -> str:
+        """查询统一审计历史或指定历史运行的操作详情。
+
+        Args:
+            keyword(string): 对象名称、摘要或关联 ID 关键词，不筛选时传空字符串
+            module(string): 模块筛选，例如 task、pt、auto_series，不筛选时传空字符串
+            status(string): 状态筛选，例如 running、completed、failed，不筛选时传空字符串
+            run_id(string): 查询详情时传审计运行 ID，否则传空字符串
+            limit(number): 最多返回的历史数量，建议 1 到 50
+        """
+        return await natural_tools.query_history(self, event, keyword, module, status, run_id, limit)
+
+    @filter.llm_tool(name="cloud189_execute_task")
+    async def llm_execute_task(self, event: AstrMessageEvent, task_id: int) -> str:
+        """提交执行一个已有天翼转存任务。此写操作仅管理员可用。
+
+        Args:
+            task_id(number): 要执行的任务 ID
+        """
+        return await natural_tools.execute_task(self, event, task_id)
+
+    @filter.llm_tool(name="cloud189_hdhive_checkin")
+    async def llm_hdhive_checkin(self, event: AstrMessageEvent) -> str:
+        """执行一次影巢签到。此写操作仅管理员可用。"""
+        return await natural_tools.hdhive_checkin(self, event)
+
 
 def _last_token(event: AstrMessageEvent) -> str:
     text = (event.message_str or "").strip()
     return text.split()[0] if text else ""
+
+
+def _history_args(args) -> tuple[str, str]:
+    parts = [str(arg).strip() for arg in args if str(arg).strip()]
+    if parts and parts[-1].isdigit():
+        return " ".join(parts[:-1]), parts[-1]
+    return " ".join(parts), ""

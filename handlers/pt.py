@@ -7,7 +7,7 @@ from __future__ import annotations
 from astrbot.api.event import AstrMessageEvent
 
 from ..api.errors import friendly_error
-from ..core.templates import fmt_time, pt_release_card, pt_sub_card, truncate
+from ..core.templates import fmt_time, pt_release_card, pt_status_card, pt_sub_card, truncate
 from ._common import (
     check_admin,
     check_allowed,
@@ -25,6 +25,20 @@ _FALLBACK_PRESETS = [
     {"key": "nyaa", "label": "Nyaa"},
     {"key": "dmhy", "label": "动漫花园"},
 ]
+
+
+async def handle_pt_status(plugin, event: AstrMessageEvent):
+    """显示全局 PT 任务以及聚合下载/天翼上传速率。"""
+    err = check_allowed(plugin, event)
+    if err:
+        yield event.plain_result(err)
+        return
+    try:
+        payload = await plugin.api.pt_releases_all(limit=500)
+    except Exception as exc:
+        yield event.plain_result(friendly_error(exc))
+        return
+    yield event.plain_result(pt_status_card(payload, limit=int(plugin.config.get("page_size") or 5)))
 
 
 # ───────────────────── /pt_search ─────────────────────

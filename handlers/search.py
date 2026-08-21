@@ -10,8 +10,9 @@ from astrbot.api.event import AstrMessageEvent
 
 from ..api.errors import friendly_error
 from ..core.share_parser import parse_cloud_share
-from ..core.templates import search_results, truncate
+from ..core.templates import auto_series_intents_card, search_results, truncate
 from ._common import (
+    check_admin,
     check_allowed,
     ensure_account,
     session_key,
@@ -192,7 +193,16 @@ async def handle_series(plugin, event: AstrMessageEvent, raw: str | None, mode: 
     except Exception as exc:
         yield event.plain_result(friendly_error(exc))
         return
-    if mode == "lazy":
+    if result.get("intentId"):
+        yield event.plain_result(
+            "✅ 已创建自动追剧 Intent\n"
+            f"剧名:{title}\n"
+            f"模式:{'懒转存STRM' if mode == 'lazy' else '自动转存'}\n"
+            f"状态:{result.get('status') or 'pending'}\n"
+            f"Intent ID:{result.get('intentId')}\n"
+            f"Workflow ID:{result.get('workflowRunId') or '-'}"
+        )
+    elif mode == "lazy":
         yield event.plain_result(
             "✅ 懒转存STRM 已生成\n"
             f"剧名:{result.get('taskName') or title}\n"
@@ -206,3 +216,42 @@ async def handle_series(plugin, event: AstrMessageEvent, raw: str | None, mode: 
             f"资源:{result.get('resourceTitle') or '-'}\n"
             f"任务数:{result.get('taskCount') or 0}"
         )
+
+
+async def handle_series_intents(plugin, event: AstrMessageEvent):
+    err = check_allowed(plugin, event)
+    if err:
+        yield event.plain_result(err)
+        return
+    try:
+        intents = await plugin.api.auto_series_intents()
+    except Exception as exc:
+        yield event.plain_result(friendly_error(exc))
+        return
+    yield event.plain_result(
+        auto_series_intents_card(intents, limit=max(5, int(plugin.config.get("page_size") or 5)))
+    )
+
+
+async def handle_series_action(
+    plugin,
+    event: AstrMessageEvent,
+    intent_id: str,
+    action: str,
+):
+    err = check_allowed(plugin, event) or check_admin(plugin, event)
+    if err:
+        yield event.plain_result(err)
+        return
+    intent_id = (intent_id or "").strip()
+    if not intent_id or action not in {"pause", "resume", "run"}:
+        yield event.plain_result("用法:/series_pause|series_resume|series_run INTENT_ID")
+        return
+    try:
+        result = await plugin.api.auto_series_intent_action(intent_id, action)
+    except Exception as exc:
+        yield event.plain_result(friendly_error(exc))
+        return
+    labels = {"pause": "已暂停", "resume": "已恢复", "run": "已提交立即运行"}
+    status = result.get("status") if isinstance(result, dict) else ""
+    yield event.plain_result(f"✅ 自动追剧 {intent_id} {labels[action]}{f',状态:{status}' if status else ''}")
