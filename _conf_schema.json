@@ -29,7 +29,7 @@
   },
   "admin_user_ids": {
     "type": "list",
-    "description": "管理员 sender_id 列表;管理员才能 /execute_all、/dt_<id>、/retry_<id>、/df_<id>、/pt_toggle_<id>、/pt_refresh_<id>、/pt_retry_<id>、/pt_del_<id>",
+    "description": "管理员 sender_id 列表;管理员命令及 LLM 写操作(执行任务、创建/控制追剧、影巢签到)均会校验此列表",
     "default": []
   },
   "silent_mode": {

@@ -3,8 +3,9 @@
 后端鉴权:请求头 `x-api-key: <system.apiKey>`,可绕过 session 登录
 (见 `cloud189-auto-save/src/index.js:402-405`)。
 
-所有 200 返回包都形如 ``{ success: bool, data?: any, error?: str }``,
-此类自动解包 ``data`` 字段,失败则抛 :class:`ApiError`。
+大多数 200 返回包形如 ``{ success: bool, data?: any, error?: str }``；
+少数端点还会在同级返回 ``message`` 或 ``transferStats``。客户端默认解包
+``data``，需要同级元数据的调用可保留完整响应，失败统一抛 :class:`ApiError`。
 """
 from __future__ import annotations
 
@@ -42,7 +43,15 @@ class Cloud189ApiClient:
             await self._session.close()
         self._session = None
 
-    async def request(self, method: str, path: str, *, params=None, json=None) -> Any:
+    async def request(
+        self,
+        method: str,
+        path: str,
+        *,
+        params=None,
+        json=None,
+        unwrap: bool = True,
+    ) -> Any:
         if not self.base_url:
             raise ApiError("插件未配置 api_base_url")
         session = await self._ensure()
@@ -65,7 +74,12 @@ class Cloud189ApiClient:
                 if isinstance(data, dict) and "success" in data:
                     if not data.get("success"):
                         raise ApiError(data.get("error") or "请求失败", status=resp.status)
-                    return data.get("data")
+                    if not unwrap:
+                        return data
+                    if "data" in data:
+                        return data.get("data")
+                    payload = {key: value for key, value in data.items() if key != "success"}
+                    return payload or None
                 return data
         except aiohttp.ClientError as exc:
             raise ApiError(f"网络错误: {exc}") from exc
@@ -85,12 +99,24 @@ class Cloud189ApiClient:
         return await self.request("PUT", f"/api/accounts/{account_id}/default")
 
     # ─────────────── tasks ───────────────
-    async def list_tasks(self, *, status: str | None = None, account_id: int | None = None) -> list[dict]:
+    async def list_tasks(
+        self,
+        *,
+        status: str | None = None,
+        account_id: int | None = None,
+        keyword: str | None = None,
+        limit: int | None = None,
+    ) -> list[dict]:
         params: dict[str, Any] = {}
         if status:
             params["status"] = status
         if account_id:
             params["accountId"] = account_id
+        if keyword:
+            params["search"] = keyword
+        if limit:
+            params["page"] = 1
+            params["pageSize"] = max(1, min(int(limit), 200))
         data = await self.request("GET", "/api/tasks", params=params or None)
         # 后端有时返回 list,有时返回 {tasks, total}
         if isinstance(data, dict) and "tasks" in data:
@@ -158,11 +184,51 @@ class Cloud189ApiClient:
     async def auto_series(self, *, title: str, year: str | None, mode: str = "normal") -> dict:
         return await self.request("POST", "/api/auto-series", json={"title": title, "year": year, "mode": mode})
 
+    async def auto_series_settings(self) -> dict:
+        data = await self.request("GET", "/api/auto-series/settings")
+        return data or {}
+
+    async def auto_series_intents(self) -> list[dict]:
+        data = await self.request("GET", "/api/auto-series/intents")
+        return data or []
+
+    async def auto_series_intent_action(self, intent_id: str, action: str) -> Any:
+        if action not in {"pause", "resume", "run"}:
+            raise ValueError("自动追剧操作必须是 pause、resume 或 run")
+        return await self.request("POST", f"/api/auto-series/intents/{intent_id}/{action}")
+
     async def tmdb_search(self, keyword: str, year: str | None = None) -> dict:
         params: dict[str, Any] = {"keyword": keyword}
         if year:
             params["year"] = year
         return await self.request("GET", "/api/tmdb/search", params=params)
+
+    # ─────────────── HDHive ───────────────
+    async def hdhive_status(self) -> dict:
+        data = await self.request("GET", "/api/hdhive/status")
+        return data or {}
+
+    async def hdhive_search(self, keyword: str, *, limit: int = 12) -> dict:
+        data = await self.request(
+            "GET",
+            "/api/hdhive/search",
+            params={"keyword": keyword, "limit": max(1, min(int(limit), 50))},
+        )
+        if isinstance(data, list):
+            return {"items": data}
+        return data or {"items": []}
+
+    async def hdhive_resources(self, media_type: str, tmdb_id: str | int) -> list[dict]:
+        data = await self.request(
+            "GET",
+            "/api/hdhive/resources",
+            params={"type": media_type, "tmdbId": tmdb_id},
+        )
+        return data or []
+
+    async def hdhive_checkin(self) -> dict:
+        data = await self.request("POST", "/api/hdhive/checkin")
+        return data or {}
 
     # ─────────────── CloudSaver-style subscriptions ───────────────
     async def list_subscriptions(self) -> list[dict]:
@@ -209,8 +275,27 @@ class Cloud189ApiClient:
             params={"page": page, "pageSize": page_size},
         )
         if isinstance(data, list):
-            return {"releases": data, "total": len(data)}
+            start = (max(1, page) - 1) * max(1, page_size)
+            return {
+                "releases": data[start : start + max(1, page_size)],
+                "total": len(data),
+            }
         return data or {"releases": [], "total": 0}
+
+    async def pt_releases_all(self, *, limit: int = 100) -> dict:
+        payload = await self.request(
+            "GET",
+            "/api/pt/releases",
+            params={"limit": max(1, min(int(limit), 500))},
+            unwrap=False,
+        )
+        if isinstance(payload, list):
+            return {"releases": payload, "transferStats": {}}
+        payload = payload or {}
+        return {
+            "releases": payload.get("data") or [],
+            "transferStats": payload.get("transferStats") or {},
+        }
 
     async def pt_release_retry(self, release_id: int) -> Any:
         return await self.request("POST", f"/api/pt/releases/{release_id}/retry")
@@ -218,3 +303,30 @@ class Cloud189ApiClient:
     async def pt_release_delete(self, release_id: int, *, delete_files: bool = True) -> Any:
         params = {"deleteFiles": "true" if delete_files else "false"}
         return await self.request("DELETE", f"/api/pt/releases/{release_id}", params=params)
+
+    # ─────────────── audit history ───────────────
+    async def audit_runs(
+        self,
+        *,
+        page: int = 1,
+        page_size: int = 10,
+        keyword: str | None = None,
+        module: str | None = None,
+        status: str | None = None,
+    ) -> dict:
+        params: dict[str, Any] = {
+            "page": max(1, int(page)),
+            "pageSize": max(1, min(int(page_size), 100)),
+        }
+        if keyword:
+            params["keyword"] = keyword
+        if module:
+            params["module"] = module
+        if status:
+            params["status"] = status
+        data = await self.request("GET", "/api/audit-runs", params=params)
+        return data or {"items": [], "total": 0, "pages": 1, "stats": {}}
+
+    async def audit_run_detail(self, run_id: str) -> dict:
+        data = await self.request("GET", f"/api/audit-runs/{run_id}")
+        return data or {}
